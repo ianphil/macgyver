@@ -280,6 +280,10 @@
     "Azure/azure-quickstart-templates",
     "Azure/azure-xplat-cli",
     "moby/moby",
-    "botchagalupe/DockerDo"
+    "botchagalupe/DockerDo",
+    "ultraworkers/claw-code",
+    "punkpeye/awesome-mcp-servers",
+    "openrewrite/rewrite",
+    "karpathy/autoresearch"
   ]
 }
