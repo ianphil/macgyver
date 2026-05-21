@@ -7,6 +7,7 @@ and generates an index page listing all analyzed repos.
 """
 import os
 import re
+import shutil
 from pathlib import Path
 
 import markdown
@@ -121,6 +122,44 @@ def build_spec_page(md_path: Path, rel_path: str) -> dict:
     }
 
 
+def extract_html_title_and_summary(html_text: str, fallback_title: str) -> tuple[str, str]:
+    """Extract display metadata from a standalone HTML artifact."""
+    title_match = re.search(r"<title[^>]*>(.*?)</title>", html_text, re.IGNORECASE | re.DOTALL)
+    h1_match = re.search(r"<h1[^>]*>(.*?)</h1>", html_text, re.IGNORECASE | re.DOTALL)
+    paragraph_match = re.search(r"<p[^>]*>(.*?)</p>", html_text, re.IGNORECASE | re.DOTALL)
+
+    raw_title = h1_match.group(1) if h1_match else title_match.group(1) if title_match else fallback_title
+    raw_summary = paragraph_match.group(1) if paragraph_match else ""
+
+    strip_tags = re.compile(r"<[^>]+>")
+    title = re.sub(r"\s+", " ", strip_tags.sub("", raw_title)).strip()
+    summary = re.sub(r"\s+", " ", strip_tags.sub("", raw_summary)).strip()
+
+    return title or fallback_title, summary
+
+
+def copy_html_artifact(html_path: Path, rel_path: str) -> dict:
+    """Copy a standalone HTML artifact into the static site. Returns metadata dict."""
+    out_path = OUTPUT_DIR / rel_path
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(html_path, out_path)
+
+    parts = rel_path.replace(".html", "").split("/")
+    owner = parts[0] if len(parts) > 1 else ""
+    repo = parts[1] if len(parts) > 1 else parts[0]
+    full_name = f"{owner}/{repo}" if owner else repo
+    title, summary = extract_html_title_and_summary(html_path.read_text("utf-8"), full_name)
+
+    return {
+        "full_name": full_name,
+        "owner": owner,
+        "repo": repo,
+        "title": title,
+        "summary": summary,
+        "url": rel_path,
+    }
+
+
 def build_index(specs: list[dict]):
     """Generate the index page listing all specs."""
     specs_sorted = sorted(specs, key=lambda s: s["full_name"].lower())
@@ -176,6 +215,12 @@ def main():
         rel = str(md_file.relative_to(EXPERTISE_DIR))
         print(f"  Converting {rel}")
         meta = build_spec_page(md_file, rel)
+        specs.append(meta)
+
+    for html_file in sorted(EXPERTISE_DIR.rglob("*.html")):
+        rel = str(html_file.relative_to(EXPERTISE_DIR))
+        print(f"  Copying {rel}")
+        meta = copy_html_artifact(html_file, rel)
         specs.append(meta)
 
     build_index(specs)
