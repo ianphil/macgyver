@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenClaw tasks capability specification</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #ffffff;
+      --text: #1f2328;
+      --muted: #59636e;
+      --border: #d8dee4;
+      --accent: #0969da;
+      --panel: #f6f8fa;
+    }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.6;
+    }
+    main {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 48px 24px 72px;
+    }
+    h1, h2, h3 {
+      line-height: 1.25;
+      margin: 0 0 0.6em;
+      font-weight: 650;
+    }
+    h1 { font-size: 2rem; }
+    h2 {
+      font-size: 1.35rem;
+      margin-top: 2.2rem;
+      padding-top: 0.8rem;
+      border-top: 1px solid var(--border);
+    }
+    h3 {
+      font-size: 1.05rem;
+      margin-top: 1.4rem;
+    }
+    p { margin: 0 0 1rem; }
+    a { color: var(--accent); }
+    ul, ol { padding-left: 1.35rem; }
+    li { margin: 0.35rem 0; }
+    dl { margin: 0; }
+    dt {
+      font-weight: 650;
+      margin-top: 1rem;
+    }
+    dd {
+      margin: 0.25rem 0 0.85rem 1rem;
+    }
+    .muted { color: var(--muted); }
+  </style>
+</head>
+<body>
+<main>
+  <h1>OpenClaw tasks capability specification</h1>
+
+  <section>
+    <h2>Overview</h2>
+    <p>OpenClaw tasks give operators, agents, and trusted clients a shared record of background work that continues outside the immediate conversation. The capability helps people answer what is running, what finished, what failed, what needs attention, and where completion should be reported, without turning the task system into the scheduler or executor for that work.</p>
+  </section>
+
+  <section>
+    <h2>Users and actors</h2>
+    <ul>
+      <li><strong>Operator:</strong> a person responsible for inspecting, debugging, cancelling, or cleaning up background work.</li>
+      <li><strong>Chat user:</strong> a person asking the assistant to show current background activity from a conversation.</li>
+      <li><strong>Agent:</strong> an assistant process that can start delegated work, receive completion events, or report status.</li>
+      <li><strong>Scheduler:</strong> a system actor that starts work at a configured time and reports each run outcome.</li>
+      <li><strong>Delegation runner:</strong> a system actor that performs work in a child context and reports lifecycle changes.</li>
+      <li><strong>Trusted client:</strong> an approved application that needs task summaries, details, or cancellation controls.</li>
+      <li><strong>Plugin:</strong> an extension that needs owner-scoped visibility into its own background work.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Capabilities</h2>
+
+    <h3>Background work visibility</h3>
+    <dl>
+      <dt>Users can see detached work as a durable activity record</dt>
+      <dd><strong>Description:</strong> When supported background work starts, the product records what work began, who owns it, where it belongs, its current state, recent progress, and its eventual outcome.</dd>
+      <dd><strong>Inputs required:</strong> A background work request from a supported source, a human-readable task description, ownership context, and any available run or session identity.</dd>
+      <dd><strong>Observable outcomes:</strong> The work appears in operator and status views with current state, timing, owner, and summary information.</dd>
+      <dd><strong>Acceptance criteria:</strong> A scheduled run, delegated run, command-backed run, or media generation run creates one visible task record; records can be read after the initiating interaction has ended; records include enough information to correlate work with its owner.</dd>
+
+      <dt>Users can understand the current state of background work</dt>
+      <dd><strong>Description:</strong> Each task reports whether it is waiting, actively running, completed, failed, timed out, cancelled, or lost.</dd>
+      <dd><strong>Inputs required:</strong> Lifecycle updates from the actor that owns the work.</dd>
+      <dd><strong>Observable outcomes:</strong> Status views and task details show a clear, current state and relevant timing.</dd>
+      <dd><strong>Acceptance criteria:</strong> Running work becomes active; successful work becomes complete; errors and timeouts are represented distinctly; a stronger terminal state is not replaced by a later lower-confidence success update.</dd>
+
+      <dt>Users can distinguish task tracking from scheduling</dt>
+      <dd><strong>Description:</strong> The task capability records what happened to background work without deciding when scheduled work should start.</dd>
+      <dd><strong>Inputs required:</strong> A task-producing actor that already owns the work lifecycle.</dd>
+      <dd><strong>Observable outcomes:</strong> Scheduled jobs keep their own timing behavior while task views show individual run activity.</dd>
+      <dd><strong>Acceptance criteria:</strong> Creating a task record does not by itself schedule new work; every scheduled execution can still create a task record for visibility.</dd>
+    </dl>
+
+    <h3>Operator inspection and control</h3>
+    <dl>
+      <dt>Operators can list and filter task records</dt>
+      <dd><strong>Description:</strong> Operators can view recent background work and narrow the view by work kind or status.</dd>
+      <dd><strong>Inputs required:</strong> Optional kind and status filters.</dd>
+      <dd><strong>Observable outcomes:</strong> The operator receives a newest-first list with task identifiers, status, delivery state, run correlation, and summary text.</dd>
+      <dd><strong>Acceptance criteria:</strong> No-filter listing shows all visible records; kind filtering excludes other kinds; status filtering excludes other statuses; an empty result clearly says no tasks matched.</dd>
+
+      <dt>Operators can inspect a single task</dt>
+      <dd><strong>Description:</strong> Operators can retrieve full detail for one background work record using a task, run, or session lookup.</dd>
+      <dd><strong>Inputs required:</strong> A lookup value that identifies the task, run, or related session.</dd>
+      <dd><strong>Observable outcomes:</strong> The operator sees status, delivery policy, ownership, timing, progress, error, terminal summary, and cleanup timing when present.</dd>
+      <dd><strong>Acceptance criteria:</strong> Valid lookups return one matching record; invalid lookups fail with guidance to list available records; terminal records include outcome details when available.</dd>
+
+      <dt>Operators can cancel background work</dt>
+      <dd><strong>Description:</strong> Operators can request that running background work stop and can record cancellation for work whose underlying owner cannot be directly stopped.</dd>
+      <dd><strong>Inputs required:</strong> A task lookup and, when available, an optional cancellation reason.</dd>
+      <dd><strong>Observable outcomes:</strong> The task becomes cancelled or returns a clear reason it could not be cancelled.</dd>
+      <dd><strong>Acceptance criteria:</strong> Running child work receives a stop request; command-tracked work can be marked cancelled; successful cancellation updates the task state; failed cancellation reports a reason.</dd>
+
+      <dt>Operators can change task notification behavior</dt>
+      <dd><strong>Description:</strong> Operators can choose whether a task reports only terminal changes, every state change, or no task-specific notifications.</dd>
+      <dd><strong>Inputs required:</strong> A task lookup and a notification policy.</dd>
+      <dd><strong>Observable outcomes:</strong> Future task delivery follows the selected policy.</dd>
+      <dd><strong>Acceptance criteria:</strong> Terminal-only policy reports completion; state-change policy reports progress transitions; silent policy suppresses task-specific user notifications.</dd>
+    </dl>
+
+    <h3>Reliability and recovery</h3>
+    <dl>
+      <dt>Operators can audit unhealthy background work</dt>
+      <dd><strong>Description:</strong> The product identifies task records that look stale, lost, undelivered, incomplete, or internally inconsistent.</dd>
+      <dd><strong>Inputs required:</strong> A request for a health audit and optional severity or issue filters.</dd>
+      <dd><strong>Observable outcomes:</strong> The operator sees findings with severity, issue type, affected record, and detail.</dd>
+      <dd><strong>Acceptance criteria:</strong> Long-queued work is warned; long-running work is errored; delivery failures are visible unless notifications are silent; retained lost records warn before their cleanup window expires and error afterward.</dd>
+
+      <dt>Operators can preview and apply maintenance safely</dt>
+      <dd><strong>Description:</strong> The product can reconcile active records with their owning actors, recover known outcomes, stamp cleanup timing, remove expired records, and report what it would change before writing changes.</dd>
+      <dd><strong>Inputs required:</strong> A maintenance request and an apply or preview mode.</dd>
+      <dd><strong>Observable outcomes:</strong> Preview reports expected changes; apply performs eligible changes and reports before-and-after health.</dd>
+      <dd><strong>Acceptance criteria:</strong> Preview does not mutate task state; apply reconciles eligible records; maintenance explains why stale work is retained, recovered, marked lost, or pruned.</dd>
+
+      <dt>Scheduled work can be recovered before being marked lost</dt>
+      <dd><strong>Description:</strong> When a scheduled run no longer appears active, the product checks durable run evidence before declaring its task lost.</dd>
+      <dd><strong>Inputs required:</strong> A stale scheduled-run task and available run history or job state.</dd>
+      <dd><strong>Observable outcomes:</strong> Completed scheduled runs are finalized from durable evidence; only unrecoverable stale runs become lost.</dd>
+      <dd><strong>Acceptance criteria:</strong> A completed scheduled run is not falsely marked lost after restart; offline inspection does not treat absence of live ownership as conclusive by itself.</dd>
+
+      <dt>Task records are retained long enough for review and then cleaned up</dt>
+      <dd><strong>Description:</strong> Terminal task records remain available for a bounded review period and are later removed automatically.</dd>
+      <dd><strong>Inputs required:</strong> A task reaching a terminal state.</dd>
+      <dd><strong>Observable outcomes:</strong> Recent terminal work remains inspectable; expired work disappears from normal task records.</dd>
+      <dd><strong>Acceptance criteria:</strong> Terminal work receives cleanup timing; expired records are pruned; stale completed records are hidden from concise status views before final removal.</dd>
+    </dl>
+
+    <h3>Completion and delivery</h3>
+    <dl>
+      <dt>Users can receive completion updates through the right conversation</dt>
+      <dd><strong>Description:</strong> When policy allows, the product delivers task completion to the remembered conversation target or queues it for the requester session.</dd>
+      <dd><strong>Inputs required:</strong> A terminal task, delivery context when available, and notification policy.</dd>
+      <dd><strong>Observable outcomes:</strong> Completion appears in the intended conversation, or the requester session is awakened to handle it.</dd>
+      <dd><strong>Acceptance criteria:</strong> Direct delivery is attempted when a valid target exists; fallback queuing is used when direct delivery is unavailable; silent policy suppresses user-facing task notifications.</dd>
+
+      <dt>Users are protected from stale interim completion text</dt>
+      <dd><strong>Description:</strong> For background runs that delegate further work, the product prefers the final responsible output over interim acknowledgement text.</dd>
+      <dd><strong>Inputs required:</strong> A background run that has descendant work or interim output.</dd>
+      <dd><strong>Observable outcomes:</strong> Users receive the final relevant result instead of a premature acknowledgement when the final result is available.</dd>
+      <dd><strong>Acceptance criteria:</strong> Interim-only updates are suppressed while descendant work is still responsible; final descendant output is preferred when it arrives before delivery.</dd>
+    </dl>
+
+    <h3>Chat, status, and client visibility</h3>
+    <dl>
+      <dt>Chat users can view current-session background activity</dt>
+      <dd><strong>Description:</strong> A chat user can ask for the current task board and see active and recent work linked to that conversation.</dd>
+      <dd><strong>Inputs required:</strong> An authorized chat request from a session.</dd>
+      <dd><strong>Observable outcomes:</strong> The user sees active and recent tasks with status, timing, progress, and error detail.</dd>
+      <dd><strong>Acceptance criteria:</strong> Active work is shown first; recent failures remain visible; stale completed work is hidden; unauthorized requests do not disclose task details.</dd>
+
+      <dt>Chat users can see safe aggregate task counts without cross-session detail leaks</dt>
+      <dd><strong>Description:</strong> When no current-session tasks are visible, the product can show aggregate same-agent counts without exposing another session's task text.</dd>
+      <dd><strong>Inputs required:</strong> A chat request from a session with no visible linked tasks.</dd>
+      <dd><strong>Observable outcomes:</strong> The user sees aggregate active and total counts for the same agent when relevant.</dd>
+      <dd><strong>Acceptance criteria:</strong> Detail from other sessions is not shown; same-agent counts can appear; unrelated agent work is not exposed.</dd>
+
+      <dt>Status views summarize task pressure</dt>
+      <dd><strong>Description:</strong> Status surfaces include concise task pressure so users can tell whether background work is active or recently failed.</dd>
+      <dd><strong>Inputs required:</strong> A status request for a session or agent context.</dd>
+      <dd><strong>Observable outcomes:</strong> Status includes active counts, recent failure context, and task kind when useful.</dd>
+      <dd><strong>Acceptance criteria:</strong> Active work is prioritized over completed work; recent failures are shown when no active work exists; stale completed work is omitted.</dd>
+
+      <dt>Trusted clients can manage task records through a stable contract</dt>
+      <dd><strong>Description:</strong> Approved client applications can list task summaries, retrieve task detail, and request cancellation.</dd>
+      <dd><strong>Inputs required:</strong> Client request parameters such as status, agent, session, task identity, limit, or cancellation reason.</dd>
+      <dd><strong>Observable outcomes:</strong> Clients receive sanitized task summaries or cancellation results with stable status names.</dd>
+      <dd><strong>Acceptance criteria:</strong> Listing supports filtering and pagination; reading a missing task fails clearly; cancellation returns whether a record was found and whether it was cancelled.</dd>
+    </dl>
+
+    <h3>Flow-level coordination</h3>
+    <dl>
+      <dt>Operators can observe multi-step background work as a flow</dt>
+      <dd><strong>Description:</strong> When work spans multiple steps, the product can represent the parent flow separately from individual task records.</dd>
+      <dd><strong>Inputs required:</strong> A flow owner, goal, current state, and linked task records when present.</dd>
+      <dd><strong>Observable outcomes:</strong> Operators can see flow status, task counts, current step, blocking reason, and linked task records.</dd>
+      <dd><strong>Acceptance criteria:</strong> A flow can be listed; a flow can be inspected; linked task counts reflect active, total, and issue counts.</dd>
+
+      <dt>Operators can cancel a background flow</dt>
+      <dd><strong>Description:</strong> Operators can request cancellation for a multi-step flow so it stops starting new child work and settles once active work ends or is cancelled.</dd>
+      <dd><strong>Inputs required:</strong> A flow lookup.</dd>
+      <dd><strong>Observable outcomes:</strong> The flow records cancellation intent, active child tasks receive cancellation requests when possible, and the flow stops progressing to new steps.</dd>
+      <dd><strong>Acceptance criteria:</strong> Cancellation intent survives restart; active linked tasks are addressed; no new child work starts after cancellation is requested.</dd>
+
+      <dt>Operators can audit unhealthy flows</dt>
+      <dd><strong>Description:</strong> The product can identify flows that are stuck, missing linked task evidence, blocked by missing work, stuck during cancellation, or unable to restore state.</dd>
+      <dd><strong>Inputs required:</strong> A health audit request.</dd>
+      <dd><strong>Observable outcomes:</strong> Flow findings appear alongside task findings with severity and detail.</dd>
+      <dd><strong>Acceptance criteria:</strong> Stale running flows are flagged; stale waiting or blocked flows are flagged; missing linked task evidence is reported only after the flow is stale enough to avoid false positives.</dd>
+    </dl>
+
+    <h3>Safety and privacy</h3>
+    <dl>
+      <dt>User-facing task text is sanitized and bounded</dt>
+      <dd><strong>Description:</strong> The product removes internal context and limits verbose task text before showing it in chat, status, or client responses.</dd>
+      <dd><strong>Inputs required:</strong> Task title, progress, terminal summary, or error text that may contain internal context or excessive length.</dd>
+      <dd><strong>Observable outcomes:</strong> Users see concise, safe summaries rather than internal runtime details.</dd>
+      <dd><strong>Acceptance criteria:</strong> Internal markers are removed; long text is shortened; error context is safe for user-facing display.</dd>
+
+      <dt>Plugins can manage only owner-scoped task and flow records</dt>
+      <dd><strong>Description:</strong> Extensions can access task and flow visibility for the session they are bound to without receiving broad operator access.</dd>
+      <dd><strong>Inputs required:</strong> A bound session context.</dd>
+      <dd><strong>Observable outcomes:</strong> The plugin can list, resolve, inspect, and request cancellation for owned task or flow records.</dd>
+      <dd><strong>Acceptance criteria:</strong> A plugin without a bound session cannot use the task surface; owner-scoped access does not disclose unrelated task records.</dd>
+    </dl>
+  </section>
+
+  <section>
+    <h2>Constraints</h2>
+    <ul>
+      <li>Task tracking must not become the scheduler or executor for the underlying work.</li>
+      <li>Normal interactive chat and heartbeat turns must not create task records.</li>
+      <li>Notification delivery must obey the selected notification policy.</li>
+      <li>Cancellation is best-effort and must report when the underlying work cannot be stopped.</li>
+      <li>Task and flow text shown outside trusted internals must be sanitized and bounded.</li>
+      <li>Session and agent visibility boundaries must prevent cross-session detail leaks.</li>
+      <li>Terminal records must be retained for recent inspection and eventually removed.</li>
+      <li>Lost-state detection must account for the owning actor before reporting a task lost.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Integrations</h2>
+    <ul>
+      <li>Scheduler for time-based work and scheduled-run history.</li>
+      <li>Delegation runners for child-agent work.</li>
+      <li>External agent session runners for background sessions.</li>
+      <li>Command-backed agent runner for operator-initiated background work.</li>
+      <li>Media providers for long-running generation jobs.</li>
+      <li>Messaging channels for direct completion delivery.</li>
+      <li>Trusted client applications for task listing, inspection, and cancellation.</li>
+      <li>Plugins that need owner-scoped task and flow controls.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Out of scope</h2>
+    <ul>
+      <li>Choosing when scheduled jobs run.</li>
+      <li>Executing the underlying background work directly.</li>
+      <li>Creating task records for normal chat turns or heartbeat turns.</li>
+      <li>Guaranteeing cancellation when the owning actor cannot be stopped.</li>
+      <li>Providing unlimited task history.</li>
+      <li>Exposing full task details across unrelated sessions or agents.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Success indicators</h2>
+    <ul>
+      <li>Operators can identify active background work without searching logs.</li>
+      <li>False lost reports for scheduled work decrease after restarts.</li>
+      <li>Completion messages arrive in the intended conversation or are queued for the requester.</li>
+      <li>Stale running and delivery-failed work is surfaced through audit and status views.</li>
+      <li>Chat task boards show useful current-session detail without leaking other-session task content.</li>
+      <li>Expired terminal records are removed without operator intervention.</li>
+      <li>Multi-step background work can be inspected and cancelled at both flow and individual task levels.</li>
+    </ul>
+  </section>
+</main>
+</body>
+</html>

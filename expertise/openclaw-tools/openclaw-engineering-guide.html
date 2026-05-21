@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenClaw tasks engineering guide</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #ffffff;
+      --text: #1f2328;
+      --muted: #59636e;
+      --border: #d8dee4;
+      --panel: #f6f8fa;
+      --accent: #0969da;
+    }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.6;
+    }
+    main {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 48px 24px 72px;
+    }
+    h1, h2, h3 {
+      line-height: 1.25;
+      margin: 0 0 0.65em;
+      font-weight: 650;
+    }
+    h1 { font-size: 2rem; }
+    h2 {
+      font-size: 1.35rem;
+      margin-top: 2.2rem;
+      padding-top: 0.8rem;
+      border-top: 1px solid var(--border);
+    }
+    h3 {
+      font-size: 1.05rem;
+      margin-top: 1.4rem;
+    }
+    p { margin: 0 0 1rem; }
+    ul, ol { padding-left: 1.35rem; }
+    li { margin: 0.35rem 0; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1rem 0;
+      font-size: 0.95rem;
+    }
+    th, td {
+      text-align: left;
+      vertical-align: top;
+      border-bottom: 1px solid var(--border);
+      padding: 0.45rem 0.5rem;
+    }
+    th { font-weight: 650; background: var(--panel); }
+    code {
+      color: var(--accent);
+      background: var(--panel);
+      padding: 0.1rem 0.25rem;
+      border-radius: 4px;
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      font-size: 0.92em;
+    }
+    pre {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.9rem;
+      overflow-x: auto;
+    }
+    pre code {
+      background: transparent;
+      padding: 0;
+      color: var(--text);
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>OpenClaw tasks engineering guide</h1>
+
+  <section>
+    <h2>Overview</h2>
+    <p>The OpenClaw task subsystem is the shared background-run ledger for detached work. It records ACP sessions, native subagents, scheduled-job executions, gateway-backed CLI runs, and async media jobs. It persists task state, exposes operator and client views, delivers completion notifications, supports best-effort cancellation, and runs maintenance to reconcile stale records. It does not schedule or execute the underlying work.</p>
+  </section>
+
+  <section>
+    <h2>Mental model</h2>
+    <pre><code>producer runtime
+  -> detached-task-runtime facade
+  -> task-executor orchestration
+  -> task-registry singleton
+  -> SQLite store + in-memory indexes
+  -> CLI / Gateway RPC / chat / status / plugin runtime views
+
+gateway startup
+  -> task-registry maintenance sweeper
+  -> runtime-aware reconciliation, cleanup stamping, pruning</code></pre>
+    <p>Think of tasks as durable records with lifecycle transitions. The owner runtime remains responsible for doing the work. Task Flow sits one level above tasks when background work needs parent flow state, multi-step control, or mirrored flow status.</p>
+  </section>
+
+  <section>
+    <h2>Repository layout</h2>
+    <table>
+      <thead><tr><th>Path</th><th>Use it for</th></tr></thead>
+      <tbody>
+        <tr><td><code>src/tasks/task-registry.ts</code></td><td>Core task state, indexes, lifecycle updates, lookups, delivery, cancellation, summaries, and restore.</td></tr>
+        <tr><td><code>src/tasks/task-registry.types.ts</code></td><td>Canonical task record, runtime, status, delivery, notify, event, and summary types.</td></tr>
+        <tr><td><code>src/tasks/task-executor.ts</code></td><td>Producer-facing orchestration: create queued/running tasks, finalize by run id, retry blocked flows, cancel tasks/flows.</td></tr>
+        <tr><td><code>src/tasks/detached-task-runtime*.ts</code></td><td>Facade and optional runtime registration contract for detached task lifecycle ownership.</td></tr>
+        <tr><td><code>src/tasks/task-registry.store*.ts</code></td><td>Store abstraction and SQLite-backed persistence for task records and delivery state.</td></tr>
+        <tr><td><code>src/tasks/task-registry.maintenance.ts</code></td><td>Runtime-aware reconciliation, lost detection, cron recovery, cleanup stamping, pruning, and sweeper timer.</td></tr>
+        <tr><td><code>src/tasks/task-registry.audit.ts</code></td><td>Health findings for stale, lost, delivery-failed, missing-cleanup, and inconsistent records.</td></tr>
+        <tr><td><code>src/tasks/task-flow-*.ts</code></td><td>Task Flow registry, store, maintenance, audit, owner access, and internal runtime exports.</td></tr>
+        <tr><td><code>src/tasks/task-status.ts</code></td><td>Cleanup-aware task snapshots and sanitized user-visible status formatting.</td></tr>
+        <tr><td><code>src/commands/tasks.ts</code>, <code>src/commands/flows.ts</code></td><td>CLI implementations for task and flow operator commands.</td></tr>
+        <tr><td><code>src/gateway/server-methods/tasks.ts</code></td><td>Gateway protocol handlers for task list/get/cancel.</td></tr>
+        <tr><td><code>src/auto-reply/reply/commands-tasks.ts</code></td><td>Chat-native <code>/tasks</code> board.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Runtime architecture</h2>
+    <p>The registry is a module-level singleton backed by SQLite and in-memory indexes. <code>ensureTaskRegistryReady()</code> restores from the store once and subscribes to agent lifecycle events. Writes update the in-memory record, persist through <code>TaskRegistryStore</code>, sync parent flow state, and emit best-effort observer events.</p>
+    <p>Gateway startup imports <code>task-registry.maintenance.ts</code>, configures the cron store path, marks the gateway as authoritative for cron active jobs, and starts a deferred sweep plus a 60-second interval sweep. Minimal test gateways skip this runtime loop.</p>
+    <p>Runtime-heavy dependencies are behind narrow lazy modules. Delivery uses <code>task-registry-delivery-runtime.ts</code> to reach outbound messaging. Cancellation uses <code>task-registry-control.runtime.ts</code> to reach ACP session control and subagent control.</p>
+  </section>
+
+  <section>
+    <h2>Major subsystems</h2>
+
+    <h3>Task registry</h3>
+    <ul>
+      <li><strong>Responsibility:</strong> Own task records, indexes, lifecycle writes, delivery state, lookups, summaries, and cancellation fallback.</li>
+      <li><strong>Key files/symbols:</strong> <code>task-registry.ts</code>, <code>createTaskRecord</code>, <code>updateTaskStateByRunId</code>, <code>maybeDeliverTaskTerminalUpdate</code>, <code>cancelTaskById</code>, <code>listTaskRecords</code>.</li>
+      <li><strong>External interface:</strong> Re-exported through <code>runtime-internal.ts</code> for internal consumers; higher-level callers should prefer <code>detached-task-runtime.ts</code> or <code>task-executor.ts</code>.</li>
+      <li><strong>Collaborators:</strong> task store, task flow registry, agent events, outbound message delivery, system events, heartbeat wake, ACP/subagent control.</li>
+      <li><strong>State:</strong> <code>tasks</code>, <code>taskDeliveryStates</code>, indexes by run id, owner key, parent flow id, and related session key, plus a pending-delivery guard set.</li>
+      <li><strong>Tests:</strong> <code>src/tasks/task-registry.test.ts</code>, <code>src/tasks/task-registry.store.test.ts</code>.</li>
+      <li><strong>Extension pattern:</strong> Add new lifecycle metadata to <code>TaskRecord</code>, SQLite row mapping, store tests, domain views, CLI/Gateway mappers, and status sanitization as needed.</li>
+    </ul>
+
+    <h3>Detached task runtime facade</h3>
+    <ul>
+      <li><strong>Responsibility:</strong> Provide producer-safe lifecycle calls and allow a registered runtime to own lifecycle and cancellation.</li>
+      <li><strong>Key files/symbols:</strong> <code>detached-task-runtime.ts</code>, <code>detached-task-runtime-contract.ts</code>, <code>registerDetachedTaskRuntime</code>, <code>createRunningTaskRun</code>, <code>finalizeTaskRunByRunId</code>.</li>
+      <li><strong>External interface:</strong> Producers call this facade to avoid reaching into registry internals.</li>
+      <li><strong>Collaborators:</strong> <code>task-executor.ts</code>, optional registered runtime, maintenance recovery hook.</li>
+      <li><strong>State:</strong> Runtime registration state in <code>detached-task-runtime-state.ts</code>.</li>
+      <li><strong>Tests:</strong> <code>src/tasks/detached-task-runtime.test.ts</code>.</li>
+      <li><strong>Extension pattern:</strong> Register a runtime only when it genuinely owns execution/cancellation semantics; return <code>found: false</code> for tasks it does not own so core fallback can proceed.</li>
+    </ul>
+
+    <h3>Task executor</h3>
+    <ul>
+      <li><strong>Responsibility:</strong> Bridge producer intent to registry writes and Task Flow behavior.</li>
+      <li><strong>Key files/symbols:</strong> <code>task-executor.ts</code>, <code>createQueuedTaskRun</code>, <code>createRunningTaskRun</code>, <code>completeTaskRunByRunId</code>, <code>failTaskRunByRunId</code>, <code>cancelDetachedTaskRunById</code>.</li>
+      <li><strong>External interface:</strong> Used by the default detached runtime and some direct internal call sites.</li>
+      <li><strong>Collaborators:</strong> task registry, task flow registry, owner access, registered detached runtime.</li>
+      <li><strong>State:</strong> No durable state of its own; writes through registry and flow registry.</li>
+      <li><strong>Tests:</strong> <code>src/tasks/task-executor.test.ts</code>, <code>src/tasks/task-executor-policy.test.ts</code>.</li>
+      <li><strong>Extension pattern:</strong> Add orchestration-level behavior here when it must apply across producers, not in individual producer call sites.</li>
+    </ul>
+
+    <h3>Persistence stores</h3>
+    <ul>
+      <li><strong>Responsibility:</strong> Persist task and flow snapshots and incremental upserts/deletes.</li>
+      <li><strong>Key files/symbols:</strong> <code>task-registry.store.ts</code>, <code>task-registry.store.sqlite.ts</code>, <code>task-flow-registry.store.ts</code>, <code>task-flow-registry.store.sqlite.ts</code>.</li>
+      <li><strong>External interface:</strong> Store interfaces expose load/save/upsert/delete/close and are replaceable in tests.</li>
+      <li><strong>Collaborators:</strong> path resolvers, SQLite WAL maintenance, delivery-context normalization.</li>
+      <li><strong>State:</strong> <code>task_runs</code>, <code>task_delivery_state</code>, and <code>flow_runs</code> tables under the OpenClaw state directory.</li>
+      <li><strong>Tests:</strong> store tests and path tests in <code>src/tasks</code>.</li>
+      <li><strong>Extension pattern:</strong> Keep row-to-record and bind functions symmetric; add migration logic for new columns; update index coverage for common lookup paths.</li>
+    </ul>
+
+    <h3>Maintenance and audit</h3>
+    <ul>
+      <li><strong>Responsibility:</strong> Detect stale/lost records, recover cron results, stamp cleanup, prune expired rows, and produce health findings.</li>
+      <li><strong>Key files/symbols:</strong> <code>task-registry.maintenance.ts</code>, <code>runTaskRegistryMaintenance</code>, <code>previewTaskRegistryMaintenance</code>, <code>startTaskRegistryMaintenance</code>, <code>listTaskAuditFindings</code>.</li>
+      <li><strong>External interface:</strong> CLI <code>tasks audit</code>/<code>tasks maintenance</code>, gateway startup sweeper, status health.</li>
+      <li><strong>Collaborators:</strong> ACP session metadata, session stores, cron active jobs, cron store/logs, agent run contexts, task registry, plugin state sweeps.</li>
+      <li><strong>State:</strong> Maintenance timers and configured runtime dependencies.</li>
+      <li><strong>Tests:</strong> <code>task-registry.maintenance.issue-60299.test.ts</code>, <code>task-registry.audit.test.ts</code>, <code>commands/tasks.test.ts</code>.</li>
+      <li><strong>Extension pattern:</strong> Add runtime-aware reconciliation in maintenance, then include operator diagnostics and audit coverage so stale cases are explainable.</li>
+    </ul>
+
+    <h3>Task Flow</h3>
+    <ul>
+      <li><strong>Responsibility:</strong> Track flow-level state above one or more tasks, with managed and task-mirrored modes.</li>
+      <li><strong>Key files/symbols:</strong> <code>task-flow-registry.ts</code>, <code>TaskFlowRecord</code>, <code>createManagedTaskFlow</code>, <code>syncFlowFromTask</code>, <code>updateFlowRecordByIdExpectedRevision</code>, <code>cancelFlowById</code>.</li>
+      <li><strong>External interface:</strong> CLI <code>openclaw tasks flow</code>, plugin runtime flow bindings, internal one-task auto-sync.</li>
+      <li><strong>Collaborators:</strong> task executor, task registry, task flow store, flow audit/maintenance.</li>
+      <li><strong>State:</strong> <code>flow_runs</code> rows with revision, state JSON, wait JSON, blocking task, and cancel request.</li>
+      <li><strong>Tests:</strong> <code>task-flow-registry.test.ts</code>, <code>task-flow-registry.audit.test.ts</code>, <code>task-flow-registry.maintenance.test.ts</code>.</li>
+      <li><strong>Extension pattern:</strong> Use managed mode when the flow owns child task scheduling; use mirrored mode when the flow only reflects externally created tasks.</li>
+    </ul>
+
+    <h3>Operator and client surfaces</h3>
+    <ul>
+      <li><strong>Responsibility:</strong> Let humans and clients inspect, audit, maintain, and cancel task/flow records.</li>
+      <li><strong>Key files/symbols:</strong> <code>commands/tasks.ts</code>, <code>commands/flows.ts</code>, <code>server-methods/tasks.ts</code>, <code>commands-tasks.ts</code>, <code>task-status.ts</code>.</li>
+      <li><strong>External interface:</strong> CLI, Gateway RPC, chat <code>/tasks</code>, status surfaces, plugin runtime task APIs.</li>
+      <li><strong>Collaborators:</strong> registry, maintenance, audit, flow registry, status snapshot helpers.</li>
+      <li><strong>State:</strong> Read-only except cancellation, notification policy changes, and maintenance apply.</li>
+      <li><strong>Tests:</strong> CLI, gateway, chat, and status tests listed above.</li>
+      <li><strong>Extension pattern:</strong> Keep public mappers sanitized and stable; add schema updates for Gateway changes; add JSON and text-mode CLI tests.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Core workflows</h2>
+    <h3>Create a background task</h3>
+    <ul>
+      <li><strong>Trigger:</strong> A producer starts work and calls <code>createQueuedTaskRun</code> or <code>createRunningTaskRun</code>.</li>
+      <li><strong>Path:</strong> <code>detached-task-runtime.ts</code> -> <code>task-executor.ts</code> -> <code>task-registry.ts:createTaskRecord</code> -> store upsert.</li>
+      <li><strong>Data:</strong> runtime, owner key, requester session, child session, run id, task text, delivery context, notification policy, timing.</li>
+      <li><strong>Side effects:</strong> task row and delivery row are persisted; indexes update; eligible ACP/subagent records can get a one-task flow.</li>
+      <li><strong>Failure behavior:</strong> create path throws for invalid owner/flow invariants; producers often catch and log so task tracking does not block the underlying work.</li>
+      <li><strong>Tests:</strong> <code>task-registry.test.ts</code>, producer tests, and <code>commands-tasks.test.ts</code>.</li>
+    </ul>
+
+    <h3>Finalize background work</h3>
+    <ul>
+      <li><strong>Trigger:</strong> Producer reports success, failure, timeout, or cancellation by run id.</li>
+      <li><strong>Path:</strong> <code>completeTaskRunByRunId</code>/<code>failTaskRunByRunId</code>/<code>finalizeTaskRunByRunId</code> -> <code>updateTaskStateByRunId</code> -> <code>updateTask</code> -> <code>syncFlowFromTask</code> -> optional delivery.</li>
+      <li><strong>Data:</strong> terminal status, ended time, error, progress summary, terminal summary, terminal outcome.</li>
+      <li><strong>Side effects:</strong> status/timestamps update, cleanup timing is added, flow state mirrors terminal result, delivery may be sent or queued.</li>
+      <li><strong>Failure behavior:</strong> invalid weaker status updates are ignored; delivery failures are logged and recorded.</li>
+      <li><strong>Tests:</strong> <code>task-registry.test.ts</code>, <code>subagent-registry-lifecycle</code> tests, gateway task tests.</li>
+    </ul>
+
+    <h3>Deliver a terminal update</h3>
+    <ul>
+      <li><strong>Trigger:</strong> A task becomes terminal and policy allows auto-delivery.</li>
+      <li><strong>Path:</strong> <code>maybeDeliverTaskTerminalUpdate</code> -> policy checks in <code>task-executor-policy.ts</code> -> direct outbound send or session event queue.</li>
+      <li><strong>Data:</strong> requester origin, owner session, task title, status, terminal summary, idempotency key.</li>
+      <li><strong>Side effects:</strong> outbound message, mirrored session event, heartbeat wake, delivery status update.</li>
+      <li><strong>Failure behavior:</strong> direct-send failure logs warning, attempts session fallback, and marks delivery failed.</li>
+      <li><strong>Tests:</strong> delivery cases in <code>task-registry.test.ts</code>.</li>
+    </ul>
+
+    <h3>Cancel a task</h3>
+    <ul>
+      <li><strong>Trigger:</strong> CLI, Gateway RPC, or plugin runtime requests cancellation.</li>
+      <li><strong>Path:</strong> operator surface -> <code>cancelDetachedTaskRunById</code> -> registered runtime if present -> <code>cancelTaskById</code>.</li>
+      <li><strong>Data:</strong> task id, runtime config, optional reason.</li>
+      <li><strong>Side effects:</strong> ACP session cancellation, subagent kill request, or CLI record cancellation; terminal delivery may run.</li>
+      <li><strong>Failure behavior:</strong> missing and already-terminal tasks return structured non-cancelled results; unsupported runtimes return a reason.</li>
+      <li><strong>Tests:</strong> <code>gateway/server-methods/tasks.test.ts</code>, cancellation cases in <code>task-registry.test.ts</code>.</li>
+    </ul>
+
+    <h3>Run maintenance</h3>
+    <ul>
+      <li><strong>Trigger:</strong> Gateway sweeper, <code>openclaw tasks maintenance</code>, or tests.</li>
+      <li><strong>Path:</strong> <code>runTaskRegistryMaintenance</code> -> runtime-specific backing checks -> cron recovery -> lost marking -> cleanup stamping -> pruning.</li>
+      <li><strong>Data:</strong> task snapshots, session stores, ACP metadata, cron active jobs, cron run logs, agent run contexts.</li>
+      <li><strong>Side effects:</strong> terminal recovery, lost marking, cleanupAfter writes, expired row deletion, optional terminal delivery.</li>
+      <li><strong>Failure behavior:</strong> registered recovery hooks are caught and warned; cleanup failures do not mask task outcome.</li>
+      <li><strong>Tests:</strong> <code>task-registry.maintenance.issue-60299.test.ts</code>, <code>commands/tasks.test.ts</code>.</li>
+    </ul>
+
+    <h3>Inspect tasks from chat and clients</h3>
+    <ul>
+      <li><strong>Trigger:</strong> <code>/tasks</code>, <code>tasks.list</code>, <code>tasks.get</code>, or <code>openclaw tasks list/show</code>.</li>
+      <li><strong>Path:</strong> chat uses <code>buildTaskStatusSnapshot</code>; Gateway uses <code>mapTaskSummary</code>; CLI uses inspectable reconciliation helpers.</li>
+      <li><strong>Data:</strong> task records filtered by session, agent, status, runtime, cursor, or lookup token.</li>
+      <li><strong>Side effects:</strong> read-only except CLI inspectable reconciliation can project state for display.</li>
+      <li><strong>Failure behavior:</strong> invalid Gateway params return protocol errors; missing CLI lookups exit non-zero; chat rejects unauthorized senders.</li>
+      <li><strong>Tests:</strong> <code>commands-tasks.test.ts</code>, <code>server-methods/tasks.test.ts</code>, <code>commands/tasks.test.ts</code>.</li>
+    </ul>
+
+    <h3>Coordinate a Task Flow</h3>
+    <ul>
+      <li><strong>Trigger:</strong> task executor auto-creates one-task flows or a controller creates a managed flow.</li>
+      <li><strong>Path:</strong> create/update flow record -> link tasks via <code>parentFlowId</code> -> <code>syncFlowFromTask</code> or managed flow updates -> CLI/plugin view.</li>
+      <li><strong>Data:</strong> flow id, owner, sync mode, controller id, revision, status, current step, blocking task, JSON state/wait blobs, linked tasks.</li>
+      <li><strong>Side effects:</strong> flow row persisted, task rows linked, flow status mirrors or controls child tasks.</li>
+      <li><strong>Failure behavior:</strong> expected-revision conflicts reject updates; cancel intent is sticky; audit flags stale or inconsistent flow state.</li>
+      <li><strong>Tests:</strong> <code>task-flow-registry.test.ts</code>, <code>task-flow-registry.audit.test.ts</code>, <code>commands/tasks.test.ts</code>.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Data model and state</h2>
+    <p><code>TaskRecord</code> is the central unit. It combines identity (<code>taskId</code>, <code>runId</code>, <code>sourceId</code>), ownership (<code>requesterSessionKey</code>, <code>ownerKey</code>, <code>scopeKind</code>, <code>agentId</code>), relationships (<code>childSessionKey</code>, <code>parentFlowId</code>, <code>parentTaskId</code>), lifecycle (<code>status</code>, timestamps, cleanup), delivery (<code>deliveryStatus</code>, <code>notifyPolicy</code>), and user summaries.</p>
+    <p><code>TaskFlowRecord</code> adds parent-level orchestration state: <code>syncMode</code>, <code>revision</code>, <code>goal</code>, <code>currentStep</code>, JSON state/wait payloads, blocking task data, and sticky cancellation.</p>
+    <p>Persistence uses two SQLite registries under the OpenClaw state directory: task runs and task flows. Both stores set restrictive file permissions and maintain WAL sidecars. Store interfaces are injectable for tests.</p>
+  </section>
+
+  <section>
+    <h2>External interfaces</h2>
+    <ul>
+      <li><strong>CLI:</strong> <code>openclaw tasks</code>, <code>tasks list</code>, <code>show</code>, <code>notify</code>, <code>cancel</code>, <code>audit</code>, <code>maintenance</code>, and <code>tasks flow list/show/cancel</code>.</li>
+      <li><strong>Gateway RPC:</strong> <code>tasks.list</code>, <code>tasks.get</code>, and <code>tasks.cancel</code> with schemas in <code>src/gateway/protocol/schema/tasks.ts</code>.</li>
+      <li><strong>Chat:</strong> <code>/tasks</code> for current-session task board and same-agent aggregate fallback.</li>
+      <li><strong>Status:</strong> status text and session-status tooling use cleanup-aware snapshots from <code>task-status.ts</code>.</li>
+      <li><strong>Plugin runtime:</strong> <code>createRuntimeTasks</code> exposes owner-bound task and flow accessors.</li>
+      <li><strong>Producer API:</strong> <code>detached-task-runtime.ts</code> lifecycle functions for background producers.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Cross-cutting patterns</h2>
+    <ul>
+      <li><strong>Validation:</strong> Gateway protocol handlers validate params before work. Registry creation asserts owner and parent-flow invariants.</li>
+      <li><strong>Error handling:</strong> lifecycle write errors usually propagate; delivery, observers, cleanup, and optional runtime recovery are best-effort with warnings.</li>
+      <li><strong>Logging:</strong> use <code>createSubsystemLogger</code> with task-specific subsystem names.</li>
+      <li><strong>Security:</strong> owner-scoped wrappers gate plugin access; task text is sanitized before external display; cancellation requires runtime config.</li>
+      <li><strong>Configuration:</strong> maintenance receives cron store path and cron runtime authority at gateway startup; task storage path follows <code>OPENCLAW_STATE_DIR</code>.</li>
+      <li><strong>Concurrency:</strong> module-level maps are synchronous; delivery uses a pending set to suppress duplicate sends; flow updates use revision checks.</li>
+      <li><strong>Formatting:</strong> terminal output uses theme helpers and simple tables; JSON output is stable for automation.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Testing strategy</h2>
+    <p>Tests are colocated and behavior-oriented. Core task tests are broad, so prefer targeted files while changing a narrow surface.</p>
+    <ul>
+      <li><code>pnpm test src/tasks/task-registry.test.ts</code> for lifecycle, delivery, cancellation, and registry behavior.</li>
+      <li><code>pnpm test src/tasks/task-registry.store.test.ts</code> for persistence changes.</li>
+      <li><code>pnpm test src/tasks/task-registry.audit.test.ts</code> and <code>pnpm test src/tasks/task-registry.maintenance.issue-60299.test.ts</code> for audit/maintenance changes.</li>
+      <li><code>pnpm test src/tasks/task-flow-registry.test.ts</code> and related flow audit/maintenance tests for Task Flow changes.</li>
+      <li><code>pnpm test src/commands/tasks.test.ts</code> and <code>pnpm test src/commands/tasks-json.test.ts</code> for CLI behavior.</li>
+      <li><code>pnpm test src/gateway/server-methods/tasks.test.ts</code> for Gateway RPC behavior.</li>
+      <li><code>pnpm test src/auto-reply/reply/commands-tasks.test.ts</code> for chat board behavior.</li>
+    </ul>
+    <p>Use repo wrappers such as <code>pnpm test &lt;path&gt;</code>, <code>pnpm check:changed</code>, and <code>pnpm build</code> when changes affect build output, dynamic imports, package surfaces, or gateway startup boundaries.</p>
+  </section>
+
+  <section>
+    <h2>How to make common changes</h2>
+    <h3>Add a new task-producing runtime</h3>
+    <ol>
+      <li>Add the runtime value to <code>TaskRuntime</code> only if it is truly a new owner class rather than a task kind.</li>
+      <li>Update creation/finalization call sites to use <code>detached-task-runtime.ts</code>.</li>
+      <li>Teach maintenance how to prove active backing state and recover or mark lost records.</li>
+      <li>Update CLI filters, Gateway mapping if needed, docs, tests, and audit expectations.</li>
+    </ol>
+
+    <h3>Add a field to task records</h3>
+    <ol>
+      <li>Update <code>TaskRecord</code> and any derived public view types.</li>
+      <li>Add SQLite column migration, row mapping, and bind mapping.</li>
+      <li>Update clone/snapshot and JSON output behavior if needed.</li>
+      <li>Add store tests, registry tests, and Gateway/CLI mapper tests when externally visible.</li>
+    </ol>
+
+    <h3>Add a CLI task command</h3>
+    <ol>
+      <li>Wire command syntax in <code>src/cli/program/register.status-health-sessions.ts</code>.</li>
+      <li>Implement command behavior in <code>src/commands/tasks.ts</code> or <code>src/commands/flows.ts</code>.</li>
+      <li>Support <code>--json</code> when automation is likely.</li>
+      <li>Add text and JSON tests under <code>src/commands</code>.</li>
+    </ol>
+
+    <h3>Add a Gateway task method</h3>
+    <ol>
+      <li>Add or extend schemas in <code>src/gateway/protocol/schema/tasks.ts</code>.</li>
+      <li>Implement validated handler behavior in <code>src/gateway/server-methods/tasks.ts</code>.</li>
+      <li>Regenerate protocol artifacts if required by the changed schema.</li>
+      <li>Add server-method tests and client-facing sanitization checks.</li>
+    </ol>
+
+    <h3>Change Task Flow behavior</h3>
+    <ol>
+      <li>Decide whether the change applies to <code>task_mirrored</code>, <code>managed</code>, or both.</li>
+      <li>Keep revision semantics intact for managed flow updates.</li>
+      <li>Update flow audit/maintenance if new stale or blocked states are possible.</li>
+      <li>Update CLI and plugin-domain views if new fields become operator-visible.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Operational concerns</h2>
+    <ul>
+      <li><strong>Startup:</strong> task maintenance starts during gateway early runtime startup unless running a minimal test gateway.</li>
+      <li><strong>Storage:</strong> task and flow registries are local SQLite files under the OpenClaw state directory. WAL maintenance is configured in the store modules.</li>
+      <li><strong>Cleanup:</strong> terminal task records receive <code>cleanupAfter</code> and are pruned by maintenance. Lost tasks warn during retention and error after expiry.</li>
+      <li><strong>Packaging:</strong> task cancellation depends on control runtime files being included in published builds; past changelog entries call out this packaging seam.</li>
+      <li><strong>Performance:</strong> maintenance avoids repeated broad session-store reads; issue-specific tests cover pass-local lookup reuse.</li>
+      <li><strong>Troubleshooting:</strong> use <code>openclaw tasks audit --json</code> and <code>openclaw tasks maintenance --json</code> for diagnostic reasons before applying changes.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Known risks and open questions</h2>
+    <ul>
+      <li>Registry singleton state requires disciplined test resets and can make hidden coupling easy.</li>
+      <li>Producer metadata quality is critical for maintenance; incorrect <code>runId</code>, <code>childSessionKey</code>, or <code>ownerKey</code> can break lookup, cancellation, or lost recovery.</li>
+      <li>Delivery failure retry policy appears intentionally audit-driven, not automatic; confirm before adding retries.</li>
+      <li>Notification docs should be kept aligned with policy-gated delivery behavior.</li>
+      <li>Task Flow is powerful but has two sync modes; maintainers should avoid blending managed ownership with mirrored observation in the same flow.</li>
+      <li>Plugin runtime task controls are owner-scoped; do not bypass those wrappers from plugin-facing code.</li>
+      <li>The fixed retention window may not satisfy operators who need longer audit history; this is a product decision, not just a code change.</li>
+      <li>SQLite runtime support is assumed by default persistence; environment issues can block task storage.</li>
+    </ul>
+  </section>
+</main>
+</body>
+</html>

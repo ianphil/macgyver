@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenClaw tasks capability analysis</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #ffffff;
+      --text: #1f2328;
+      --muted: #59636e;
+      --border: #d8dee4;
+      --accent: #0969da;
+      --panel: #f6f8fa;
+    }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.6;
+    }
+    main {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 48px 24px 72px;
+    }
+    h1, h2, h3 {
+      line-height: 1.25;
+      margin: 0 0 0.6em;
+      font-weight: 650;
+    }
+    h1 { font-size: 2rem; }
+    h2 {
+      font-size: 1.35rem;
+      margin-top: 2.2rem;
+      padding-top: 0.8rem;
+      border-top: 1px solid var(--border);
+    }
+    h3 {
+      font-size: 1.05rem;
+      margin-top: 1.4rem;
+    }
+    p { margin: 0 0 1rem; }
+    a { color: var(--accent); }
+    ul { padding-left: 1.35rem; }
+    li { margin: 0.35rem 0; }
+    code {
+      background: var(--panel);
+      padding: 0.1rem 0.25rem;
+      border-radius: 4px;
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      font-size: 0.92em;
+    }
+    dl {
+      margin: 0;
+    }
+    dt {
+      font-weight: 650;
+      margin-top: 1rem;
+    }
+    dd {
+      margin: 0.25rem 0 0.85rem 1rem;
+    }
+    .meta {
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+    .tag {
+      display: inline-block;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 0.05rem 0.5rem;
+      color: var(--muted);
+      font-size: 0.8rem;
+      margin-left: 0.3rem;
+      vertical-align: 0.08rem;
+    }
+    .evidence {
+      color: var(--muted);
+      font-size: 0.94rem;
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>OpenClaw tasks capability analysis</h1>
+  <p class="meta">Scope: background tasks and task flow surfaces only. This is the working audit trail for a reverse-engineered product specification.</p>
+
+  <section>
+    <h2>Overview</h2>
+    <p>OpenClaw is a local-first personal assistant. The task capability gives operators and agents a shared activity ledger for work that continues outside the immediate conversation. It does not schedule work by itself; it records, exposes, recovers, and controls detached work started by scheduled jobs, child-agent delegation, background agent runs, and long-running tool actions.</p>
+  </section>
+
+  <section>
+    <h2>Sources consulted</h2>
+    <ul>
+      <li><code>README.md</code> for product identity and operator surface context.</li>
+      <li><code>docs/automation/tasks.md</code> for the stated background task model.</li>
+      <li><code>docs/cli/tasks.md</code> for task operator command expectations.</li>
+      <li><code>docs/automation/taskflow.md</code> for flow-level capabilities above individual task records.</li>
+      <li><code>docs/automation/cron-jobs.md</code> and <code>docs/cli/cron.md</code> for scheduled-job interaction with task records.</li>
+      <li><code>CHANGELOG.md</code> for the product history around shared background-run tracking, chat task boards, status visibility, and recovery behavior.</li>
+      <li>Task command, gateway, chat, status, scheduled-job, child-agent, and task-flow tests under <code>src/</code> to validate executable behavior.</li>
+    </ul>
+    <p class="evidence">Note: The docs index command was attempted but failed during dependency setup because a local postinstall process could not spawn the runtime executable. The docs pass continued with direct source files.</p>
+  </section>
+
+  <section>
+    <h2>Capabilities - documented and verified</h2>
+    <dl>
+      <dt>Users can see detached work as durable activity records <span class="tag">VERIFIED</span></dt>
+      <dd>Background work from scheduled jobs, child-agent delegation, external agent sessions, command-initiated runs, and media generation becomes visible as task records with status, owner, timing, progress, delivery state, and outcome. Evidence: <code>docs/automation/tasks.md:15</code>, <code>docs/automation/tasks.md:91</code>, <code>src/tasks/task-registry.ts:1490</code>, <code>src/tasks/task-registry.types.ts:3</code>.</dd>
+
+      <dt>Users can distinguish task progress from scheduling responsibility <span class="tag">VERIFIED</span></dt>
+      <dd>The product explicitly positions task records as an activity ledger, while scheduled jobs and heartbeat decide when work runs. Evidence: <code>docs/automation/tasks.md:11</code>, <code>docs/automation/tasks.md:23</code>, <code>docs/automation/cron-jobs.md:41</code>.</dd>
+
+      <dt>Users can track lifecycle outcomes consistently across detached work <span class="tag">VERIFIED</span></dt>
+      <dd>Every task can move through queued, running, success, error, timeout, cancellation, or lost states. Runtime completion updates active records and protects stronger terminal outcomes from being overwritten by later success signals. Evidence: <code>docs/automation/tasks.md:119</code>, <code>src/tasks/task-registry.types.ts:5</code>, <code>src/tasks/task-registry.ts:1430</code>, <code>src/tasks/task-registry.ts:1743</code>, <code>src/tasks/task-registry.ts:1782</code>.</dd>
+
+      <dt>Operators can list and filter task records <span class="tag">VERIFIED</span></dt>
+      <dd>Operators can view all recent task records and filter by kind or status, with structured output available for automation. Evidence: <code>docs/cli/tasks.md:40</code>, <code>src/cli/program/register.status-health-sessions.ts:381</code>, <code>src/commands/tasks.ts:357</code>.</dd>
+
+      <dt>Operators can inspect one task by multiple lookup tokens <span class="tag">VERIFIED</span></dt>
+      <dd>Operators can show a single record by task identity, run identity, or session identity and see timing, delivery, error, and summary fields. Evidence: <code>docs/automation/tasks.md:202</code>, <code>docs/cli/tasks.md:48</code>, <code>src/commands/tasks.ts:409</code>.</dd>
+
+      <dt>Operators can change notification policy for a running task <span class="tag">VERIFIED</span></dt>
+      <dd>Operators can switch a task between terminal-only updates, all state changes, or silence. Evidence: <code>docs/automation/tasks.md:175</code>, <code>docs/cli/tasks.md:56</code>, <code>src/commands/tasks.ts:455</code>.</dd>
+
+      <dt>Operators can cancel background work from the task surface <span class="tag">VERIFIED</span></dt>
+      <dd>Operators can request cancellation for running work. Child-agent and external agent sessions can be stopped through their backing control surfaces; command-tracked work can be recorded as cancelled. Evidence: <code>docs/automation/tasks.md:210</code>, <code>docs/cli/tasks.md:64</code>, <code>src/commands/tasks.ts:477</code>, <code>src/gateway/server-methods/tasks.test.ts:185</code>.</dd>
+
+      <dt>Operators can audit unhealthy task records <span class="tag">VERIFIED</span></dt>
+      <dd>The product surfaces stale queued work, stale running work, lost backing state, delivery failures, missing cleanup metadata, and inconsistent timing. Evidence: <code>docs/automation/tasks.md:223</code>, <code>src/tasks/task-registry.audit.ts:92</code>, <code>src/tasks/task-registry.audit.test.ts:21</code>, <code>src/commands/tasks.test.ts:74</code>.</dd>
+
+      <dt>Operators can preview and apply maintenance <span class="tag">VERIFIED</span></dt>
+      <dd>Maintenance can reconcile active records with their backing owner, recover scheduled-run outcomes from durable run history, stamp cleanup dates, prune expired records, and clean old scheduled-run session rows. Evidence: <code>docs/automation/tasks.md:240</code>, <code>docs/automation/tasks.md:316</code>, <code>src/tasks/task-registry.maintenance.ts:953</code>, <code>src/tasks/task-registry.maintenance.ts:1068</code>, <code>src/commands/tasks.ts:584</code>.</dd>
+
+      <dt>Users can receive completion updates without polling <span class="tag">VERIFIED</span></dt>
+      <dd>Completion is push-oriented: the product can deliver directly to the remembered channel target or queue an event for the requester session and wake the session. Evidence: <code>docs/automation/tasks.md:161</code>, <code>src/tasks/task-registry.ts:1119</code>, <code>src/tasks/task-registry.test.ts:21</code>.</dd>
+
+      <dt>Chat users can view a current-session task board <span class="tag">VERIFIED</span></dt>
+      <dd>A chat command shows active and recent task records linked to the current session, with a privacy-preserving agent-local count fallback when no linked rows are visible. Evidence: <code>docs/automation/tasks.md:278</code>, <code>src/auto-reply/reply/commands-tasks.ts:84</code>, <code>src/auto-reply/reply/commands-tasks.test.ts:48</code>, <code>src/auto-reply/reply/commands-tasks.test.ts:212</code>.</dd>
+
+      <dt>Status surfaces summarize task pressure <span class="tag">VERIFIED</span></dt>
+      <dd>Status views summarize active work and recent failures while hiding stale completed records. Evidence: <code>docs/automation/tasks.md:286</code>, <code>src/status/status-text.ts:116</code>, <code>src/tasks/task-status.ts:162</code>, <code>src/auto-reply/reply/commands-status.test.ts:317</code>.</dd>
+
+      <dt>Programmatic clients can list, read, and cancel tasks <span class="tag">VERIFIED</span></dt>
+      <dd>External clients can request task summaries, retrieve a single task, and cancel a task using a stable response shape with sanitized text. Evidence: <code>CHANGELOG.md:1146</code>, <code>src/gateway/protocol/schema/tasks.ts:15</code>, <code>src/gateway/server-methods/tasks.ts:133</code>, <code>src/gateway/server-methods/tasks.test.ts:55</code>, <code>src/gateway/server-methods/tasks.test.ts:139</code>.</dd>
+
+      <dt>Task records survive process restarts and are automatically pruned <span class="tag">VERIFIED</span></dt>
+      <dd>Task records persist outside process memory, are restored on demand, and terminal rows receive bounded cleanup timing. Evidence: <code>docs/automation/tasks.md:302</code>, <code>src/tasks/task-registry.ts:940</code>, <code>src/tasks/task-registry.ts:986</code>, <code>src/tasks/task-registry.store.sqlite.ts:390</code>.</dd>
+
+      <dt>Scheduled-job runs can be recovered before being declared lost <span class="tag">VERIFIED</span></dt>
+      <dd>When scheduled-job ownership is no longer live, maintenance checks durable scheduled-run history and job state before marking a task lost. Evidence: <code>docs/automation/tasks.md:147</code>, <code>docs/automation/cron-jobs.md:61</code>, <code>CHANGELOG.md:4205</code>, <code>src/tasks/task-registry.maintenance.issue-60299.test.ts:207</code>.</dd>
+
+      <dt>Users can inspect and cancel higher-level task flows <span class="tag">VERIFIED</span></dt>
+      <dd>When work is tracked as a multi-step flow, operators can list, inspect, and request cancellation at the flow level rather than only at the individual task level. Evidence: <code>docs/automation/taskflow.md:95</code>, <code>docs/automation/taskflow.md:123</code>, <code>src/commands/flows.ts:144</code>, <code>src/commands/flows.ts:192</code>, <code>src/commands/flows.ts:252</code>.</dd>
+    </dl>
+  </section>
+
+  <section>
+    <h2>Capabilities - divergent</h2>
+    <dl>
+      <dt>All terminal tasks notify the user <span class="tag">DIVERGENT</span></dt>
+      <dd>The documentation first states that terminal tasks notify the user, then later describes silent notification policies. Code confirms that silent or not-applicable records do not send user-visible completion messages. The formal spec treats notification as policy-controlled, not universal. Evidence: <code>docs/automation/tasks.md:161</code>, <code>docs/automation/tasks.md:175</code>, <code>src/tasks/task-registry.ts:345</code>, <code>src/agents/tools/media-generate-background-shared.ts:117</code>.</dd>
+    </dl>
+  </section>
+
+  <section>
+    <h2>Capabilities - missing or partial</h2>
+    <dl>
+      <dt>Operator docs index validation <span class="tag">PARTIAL</span></dt>
+      <dd>The task documentation is present and internally cross-linked, but the documented docs-index command could not be completed in this local checkout because dependency setup failed before the index command ran. This is a verification gap for this audit, not evidence that the product capability is absent.</dd>
+    </dl>
+  </section>
+
+  <section>
+    <h2>Capabilities - discovered from code</h2>
+    <dl>
+      <dt>User-visible task text is sanitized before leaving the trusted context <span class="tag">DISCOVERED</span></dt>
+      <dd>Task titles, progress, terminal summaries, and errors are stripped or truncated before appearing in chat, status, or client responses, preventing internal runtime context from leaking to users. Evidence: <code>src/tasks/task-status.ts:49</code>, <code>src/gateway/server-methods/tasks.test.ts:139</code>, <code>src/auto-reply/reply/commands-tasks.test.ts:133</code>, <code>src/agents/openclaw-tools.session-status.test.ts:1111</code>.</dd>
+
+      <dt>Task views respect session and agent visibility boundaries <span class="tag">DISCOVERED</span></dt>
+      <dd>Session task boards show linked details only for the current session and fall back to aggregate same-agent counts instead of exposing details from other sessions. Programmatic task listing can filter by agent and session. Evidence: <code>src/auto-reply/reply/commands-tasks.test.ts:212</code>, <code>src/gateway/server-methods/tasks.ts:99</code>, <code>src/gateway/server-methods/tasks.test.ts:55</code>.</dd>
+
+      <dt>Media generation prevents accidental duplicate long-running work <span class="tag">DISCOVERED</span></dt>
+      <dd>Active media-generation task records are reused to report status for repeated requests, helping users avoid starting duplicate long-running generation. Evidence: <code>docs/automation/tasks.md:108</code>, <code>src/agents/media-generation-task-status-shared.ts:32</code>, <code>src/auto-reply/reply/commands-tasks.test.ts:87</code>.</dd>
+
+      <dt>Task maintenance explains why stale work is retained or reconciled <span class="tag">DISCOVERED</span></dt>
+      <dd>Structured maintenance output includes decision reasons for stale running tasks, such as active backing ownership versus missing backing state. Evidence: <code>CHANGELOG.md:79</code>, <code>src/commands/tasks.test.ts:145</code>, <code>src/tasks/task-registry.maintenance.ts:166</code>.</dd>
+
+      <dt>Flow health can identify stalled or inconsistent orchestration state <span class="tag">DISCOVERED</span></dt>
+      <dd>Audit behavior covers stuck flows, missing linked tasks, missing blocked tasks, stuck cancellation, and restore failure. Evidence: <code>src/tasks/task-flow-registry.audit.test.ts:70</code>, <code>src/tasks/task-flow-registry.audit.test.ts:114</code>, <code>src/commands/tasks.test.ts:74</code>.</dd>
+
+      <dt>Plugins can access bounded task and flow controls for their own sessions <span class="tag">DISCOVERED</span></dt>
+      <dd>Plugin-facing runtime capabilities let a plugin list, resolve, inspect, and cancel task records owned by its bound session, and inspect related flow state. Evidence: <code>CHANGELOG.md:5086</code>, <code>src/plugins/runtime/runtime-tasks.ts:60</code>, <code>src/plugins/runtime/runtime-tasks.ts:119</code>.</dd>
+    </dl>
+  </section>
+
+  <section>
+    <h2>Constraints observed</h2>
+    <ul>
+      <li>Tasks are records and controls, not schedulers. Scheduling remains owned by the feature that starts the work.</li>
+      <li>Heartbeat and normal interactive chat do not create task records.</li>
+      <li>Terminal records are retained for a bounded period and then pruned.</li>
+      <li>Lost state has a grace period and is evaluated against the owning runtime before being reported.</li>
+      <li>Silent notification policy must suppress user-facing task updates.</li>
+      <li>Session and agent boundaries limit which task details can be shown in chat and tool surfaces.</li>
+      <li>Task text shown to users and clients must be sanitized and bounded.</li>
+      <li>Cancellation is best-effort and depends on what owns the underlying work.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Integrations observed</h2>
+    <ul>
+      <li>Scheduled-job runner: creates a task record for every run and supplies recovery evidence.</li>
+      <li>Child-agent delegation: creates and updates records for delegated work.</li>
+      <li>External agent session runner: creates and updates records for separate background sessions.</li>
+      <li>Command-initiated agent runner: records command-backed background work.</li>
+      <li>Media generation providers: create session-backed background records and use them for status and duplicate guards.</li>
+      <li>Messaging channels: receive task completion notifications when policy and routing allow.</li>
+      <li>Operator clients: list, inspect, and cancel task records through a stable client contract.</li>
+      <li>Plugin runtime: exposes owner-scoped task and flow controls to extensions.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Open questions and ambiguities</h2>
+    <ul>
+      <li>Whether the public documentation should soften the phrase "When a task reaches a terminal state, OpenClaw notifies you" to "can notify you" to match silent task policies.</li>
+      <li>Whether task retention should become configurable for operators with heavier audit requirements.</li>
+      <li>Whether all task-producing integrations should publish the same level of progress detail, or whether progress is intentionally best-effort by producer.</li>
+      <li>Whether flow capabilities should be documented as an operator feature, a plugin author feature, or both.</li>
+    </ul>
+  </section>
+</main>
+</body>
+</html>
